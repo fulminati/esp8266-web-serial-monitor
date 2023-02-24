@@ -14,8 +14,8 @@ inject: export FRAMEWORK_JS = $(shell python3 -m jsmin app/framework.js | make -
 inject: export STYLE_CSS = $(shell python3 -m csscompressor app/style.css | make -s escape)
 inject: export WELCOME_HTML = $(shell htmlmin -s app/welcome.html | make -s escape)
 
-inject:
-	sed \
+inject:	
+	@sed \
 		-e 's/String configIndexHtml =.*$$/String configIndexHtml = "$$${A}{CONFIG_INDEX_HTML}";/g' \
 		-e 's/String configFormHtml =.*$$/String configFormHtml = "$$${A}{CONFIG_FORM_HTML}";/g' \
 		-e 's/String welcomeHtml =.*$$/String welcomeHtml = "$$${A}{WELCOME_HTML}";/g' \

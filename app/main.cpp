@@ -37,61 +37,51 @@ void appRoutes(void) {
     Serial.println("[App] Routes...");
 }
 
+
 /**
- * System bootstrap.
+ * Erase EEPROM segment.
  */
-void setup(void) {
-    Serial.begin(115200);
-    pinMode(LED_BUILTIN, OUTPUT);
-    WiFi.hostname(hostname);
-    delay(100);
-
-    Serial.println("Disconnecting previously connected WiFi");
-    WiFi.disconnect();
-    delay(200);
-
-    Serial.println("Reading SSID and passphrase from EEPROM");
-    EEPROM.begin(512);
-    delay(10);
-    String ssid = dataReadAsString(0, 32);
-    String passphrase = dataReadAsString(32, 96);
-    Serial.println("- SSID: " + ssid);
-    Serial.println("- Passphrase: " + passphrase);
-
-    Serial.println("Perform WiFi connection with EEPROM");
-        WiFi.begin(ssid.c_str(), passphrase.c_str());
-        if (testWifi()) {
-        Serial.println("Successfully connected.");
-        discoverServerStart();
-        defaultWebServerRegisterRoutes();
-        webServer.begin();
-        appSetup();
-        return;
-    }
-
-    Serial.println("Turning on the config HotSpot.");
-    discoverServerStart();
-    configWebServerRegisterRoutes();
-    webServer.begin();
-    configHotSpotSetup();
-    while ((WiFi.status() != WL_CONNECTED)) {
-        delay(100);
-        webServer.handleClient();
-        discoverServer.handleClient();
+void dataErase(int from, int to) {
+    for (int i = from; i < to; ++i) {
+        EEPROM.write(i, 0);
     }
 }
 
 /**
- * System main loop.
+ * Commit data on EEPROM.
  */
-void loop(void) {
-    if ((WiFi.status() == WL_CONNECTED)) {
-        appLoop();
-        delay(100);
-        webServer.handleClient();
-        discoverServer.handleClient();
+void dataCommit(void) {
+    EEPROM.commit();
+}
+
+/**
+ * Get IP address assigned by DHCP to the device.
+ */
+String getClientIpAddress(void) {
+    IPAddress ipAddress = WiFi.localIP();
+    return String(ipAddress[0]) + '.' + String(ipAddress[1]) + '.' + String(ipAddress[2]) + '.' + String(ipAddress[3]);
+}
+
+/**
+ * Read data from EEPROM.
+ */
+String dataReadAsString(int from, int to) {
+    String data = "";
+    for (int i = from; i < to; ++i) {
+        data += char(EEPROM.read(i));
+    }
+    return data;
+}
+
+/**
+ * Store data on EEPROM.
+ */
+void dataSaveAsString(int offset, String value) {
+    for (unsigned int i = 0; i < value.length(); ++i) {
+        EEPROM.write(offset + i, value[i]);
     }
 }
+
 
 /**
  * Test WiFi status for connection.
@@ -113,6 +103,41 @@ bool testWifi(void) {
 }
 
 /**
+ * Scan networks and prepare the list for the login form.
+ */
+void configScanNetworks(void) {
+    int countNetworks = WiFi.scanNetworks();
+    Serial.println("Networks scan completed.");
+    if (countNetworks == 0) {
+        Serial.println("No WiFi Networks found");
+        configNetworksOptions = "<option value=0>No networks found</option>";
+        configNetworksOptions += "<option value=-1>Scan for networks</option>";
+    } else {
+        Serial.print(countNetworks);
+        Serial.println(" Networks found");
+        configNetworksOptions = "<option value=0>Select a network</option>";
+        for (int i = 0; i < countNetworks; ++i) {
+            // Print SSID and RSSI for each network found
+            Serial.print(i + 1);
+            Serial.print(": ");
+            Serial.print(WiFi.SSID(i));
+            Serial.print(" (");
+            Serial.print(WiFi.RSSI(i));
+            Serial.print(")");
+            Serial.println((WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*");
+            delay(10);
+            configNetworksOptions += "<option value=\"" + WiFi.SSID(i) + "\">";
+            configNetworksOptions += WiFi.SSID(i);
+            configNetworksOptions += " (";
+            configNetworksOptions += WiFi.RSSI(i);
+            configNetworksOptions += ")";
+            configNetworksOptions += (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*";
+            configNetworksOptions += "</option>";
+        }
+    }
+}
+
+/**
  * Setup the HotSpot to access on config area.
  */
 void configHotSpotSetup(void) {
@@ -125,6 +150,37 @@ void configHotSpotSetup(void) {
     delay(100);
     WiFi.softAP(appTitle + " " + ESP.getChipId(), "");
 }
+
+/**
+ *
+ */
+String configFormHtml(void) {
+    String configFormHtml = "<form id=config> SSID <select id=network name=ssid> "+ configNetworksOptions +" </select> Password <input type=password name=passphrase required> <button id=connect type=button>Connect</button></form>";
+    return configFormHtml;
+}
+
+/**
+ *
+ */
+void defaultWebServerRegisterRoutes(void) {
+    webServer.on("/welcome", []() {
+        String welcomeHtml = "<h1>Welcome</h1>";
+        webServer.send(200, "text/html", welcomeHtml);
+    });
+    webServer.on("/reset", []() {
+        dataErase(0, 96);
+        dataCommit();
+        webServer.send(200, "text/html", "<h1>Reset ok!</h1>");
+        delay(500);
+        ESP.reset();
+    });
+    webServer.onNotFound([]() {
+        webServer.sendHeader("Location", "/welcome", true);
+        webServer.send(302, "text/plane", "");
+    });
+    appRoutes();
+}
+
 
 /**
  *
@@ -191,111 +247,62 @@ void discoverServerStart(void) {
     discoverServer.begin();
 }
 
+
+
+
 /**
- * Scan networks and prepare the list for the login form.
+ * System bootstrap.
  */
-void configScanNetworks(void) {
-    int countNetworks = WiFi.scanNetworks();
-    Serial.println("Networks scan completed.");
-    if (countNetworks == 0) {
-        Serial.println("No WiFi Networks found");
-        configNetworksOptions = "<option value=0>No networks found</option>";
-        configNetworksOptions += "<option value=-1>Scan for networks</option>";
-    } else {
-        Serial.print(countNetworks);
-        Serial.println(" Networks found");
-        configNetworksOptions = "<option value=0>Select a network</option>";
-        for (int i = 0; i < countNetworks; ++i) {
-            // Print SSID and RSSI for each network found
-            Serial.print(i + 1);
-            Serial.print(": ");
-            Serial.print(WiFi.SSID(i));
-            Serial.print(" (");
-            Serial.print(WiFi.RSSI(i));
-            Serial.print(")");
-            Serial.println((WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*");
-            delay(10);
-            configNetworksOptions += "<option value=\"" + WiFi.SSID(i) + "\">";
-            configNetworksOptions += WiFi.SSID(i);
-            configNetworksOptions += " (";
-            configNetworksOptions += WiFi.RSSI(i);
-            configNetworksOptions += ")";
-            configNetworksOptions += (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*";
-            configNetworksOptions += "</option>";
-        }
+void setup(void) {
+    Serial.begin(115200);
+    pinMode(LED_BUILTIN, OUTPUT);
+    WiFi.hostname(hostname);
+    delay(100);
+
+    Serial.println("Disconnecting previously connected WiFi");
+    WiFi.disconnect();
+    delay(200);
+
+    Serial.println("Reading SSID and passphrase from EEPROM");
+    EEPROM.begin(512);
+    delay(10);
+    String ssid = dataReadAsString(0, 32);
+    String passphrase = dataReadAsString(32, 96);
+    Serial.println("- SSID: " + ssid);
+    Serial.println("- Passphrase: " + passphrase);
+
+    Serial.println("Perform WiFi connection with EEPROM");
+        WiFi.begin(ssid.c_str(), passphrase.c_str());
+        if (testWifi()) {
+        Serial.println("Successfully connected.");
+        discoverServerStart();
+        defaultWebServerRegisterRoutes();
+        webServer.begin();
+        appSetup();
+        return;
+    }
+
+    Serial.println("Turning on the config HotSpot.");
+    discoverServerStart();
+    configWebServerRegisterRoutes();
+    webServer.begin();
+    configHotSpotSetup();
+    while ((WiFi.status() != WL_CONNECTED)) {
+        delay(100);
+        webServer.handleClient();
+        discoverServer.handleClient();
     }
 }
 
 /**
- *
+ * System main loop.
  */
-String configFormHtml(void) {
-    String configFormHtml = "<form id=config> SSID <select id=network name=ssid> "+ configNetworksOptions +" </select> Password <input type=password name=passphrase required> <button id=connect type=button>Connect</button></form>";
-    return configFormHtml;
-}
-
-/**
- *
- */
-void defaultWebServerRegisterRoutes(void) {
-    webServer.on("/welcome", []() {
-        String welcomeHtml = "<h1>Welcome</h1>";
-        webServer.send(200, "text/html", welcomeHtml);
-    });
-    webServer.on("/reset", []() {
-        dataErase(0, 96);
-        dataCommit();
-        webServer.send(200, "text/html", "<h1>Reset ok!</h1>");
-        delay(500);
-        ESP.reset();
-    });
-    webServer.onNotFound([]() {
-        webServer.sendHeader("Location", "/welcome", true);
-        webServer.send(302, "text/plane", "");
-    });
-    appRoutes();
-}
-
-/**
- * Get IP address assigned by DHCP to the device.
- */
-String getClientIpAddress(void) {
-    IPAddress ipAddress = WiFi.localIP();
-    return String(ipAddress[0]) + '.' + String(ipAddress[1]) + '.' + String(ipAddress[2]) + '.' + String(ipAddress[3]);
-}
-
-/**
- * Read data from EEPROM.
- */
-String dataReadAsString(int from, int to) {
-    String data = "";
-    for (int i = from; i < to; ++i) {
-        data += char(EEPROM.read(i));
-    }
-    return data;
-}
-
-/**
- * Store data on EEPROM.
- */
-void dataSaveAsString(int offset, String value) {
-    for (int i = 0; i < value.length(); ++i) {
-        EEPROM.write(offset + i, value[i]);
+void loop(void) {
+    if ((WiFi.status() == WL_CONNECTED)) {
+        appLoop();
+        delay(100);
+        webServer.handleClient();
+        discoverServer.handleClient();
     }
 }
 
-/**
- * Erase EEPROM segment.
- */
-void dataErase(int from, int to) {
-    for (int i = from; i < to; ++i) {
-        EEPROM.write(i, 0);
-    }
-}
-
-/**
- * Commit data on EEPROM.
- */
-void dataCommit(void) {
-    EEPROM.commit();
-}
