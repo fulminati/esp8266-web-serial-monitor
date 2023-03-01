@@ -1,9 +1,12 @@
 #include <Arduino.h>
 
 #include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
-#include <ESP8266WebServer.h>
 #include <EEPROM.h>
+
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+
+#include "data.h"
 
 const String appTitle = "ESP8266 WiFi";
 const String hostname = "esp8266.local.cloud";
@@ -11,47 +14,76 @@ const String hostname = "esp8266.local.cloud";
 String configErrorMessage;
 String configNetworksOptions;
 
-ESP8266WebServer webServer(80);
-ESP8266WebServer discoverServer(64138);
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+
 IPAddress configHotSpotIpAddress(192, 168, 24, 1);
 IPAddress configHotSpotNetmask(255, 255, 255, 0);
 
-/**
- * Application bootstrap.
- */
-void appSetup(void) {
-    Serial.println("[App] Setup...");
+void notifyClients() {
+  ws.textAll(String("ledState"));
 }
 
-/**
- * Application runtime loop.
- */
-void appLoop(void) {
-    //Serial.println("[App] Loop...");
-}
-
-/**
- * Application runtime loop.
- */
-void appRoutes(void) {
-    Serial.println("[App] Routes...");
-}
-
-
-/**
- * Erase EEPROM segment.
- */
-void dataErase(int from, int to) {
-    for (int i = from; i < to; ++i) {
-        EEPROM.write(i, 0);
+void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
+  AwsFrameInfo *info = (AwsFrameInfo*)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+    data[len] = 0;
+    if (strcmp((char*)data, "toggle") == 0) {
+      //ledState = !ledState;
+      notifyClients();
     }
+  }
 }
 
 /**
- * Commit data on EEPROM.
+ * 
  */
-void dataCommit(void) {
-    EEPROM.commit();
+void onEvent(
+    AsyncWebSocket *server, 
+    AsyncWebSocketClient *client, 
+    AwsEventType type,
+    void *arg, 
+    uint8_t *data, 
+    size_t len
+) {
+    switch (type) {
+      case WS_EVT_CONNECT:
+        Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+        break;
+      case WS_EVT_DISCONNECT:
+        Serial.printf("WebSocket client #%u disconnected\n", client->id());
+        break;
+      case WS_EVT_DATA:
+        handleWebSocketMessage(arg, data, len);
+        break;
+      case WS_EVT_PONG:
+      case WS_EVT_ERROR:
+        break;
+  }
+}
+
+/**
+ * 
+ */
+void initWebSocket() {
+  ws.onEvent(onEvent);
+  server.addHandler(&ws);
+}
+
+/**
+ * 
+ */
+String processor(const String& var) {
+  Serial.println(var);
+  if(var == "STATE"){
+    if (ledState){
+      return "ON";
+    }
+    else{
+      return "OFF";
+    }
+  }
+  return String();
 }
 
 /**
@@ -61,27 +93,6 @@ String getClientIpAddress(void) {
     IPAddress ipAddress = WiFi.localIP();
     return String(ipAddress[0]) + '.' + String(ipAddress[1]) + '.' + String(ipAddress[2]) + '.' + String(ipAddress[3]);
 }
-
-/**
- * Read data from EEPROM.
- */
-String dataReadAsString(int from, int to) {
-    String data = "";
-    for (int i = from; i < to; ++i) {
-        data += char(EEPROM.read(i));
-    }
-    return data;
-}
-
-/**
- * Store data on EEPROM.
- */
-void dataSaveAsString(int offset, String value) {
-    for (int i = 0; i < value.length(); ++i) {
-        EEPROM.write(offset + i, value[i]);
-    }
-}
-
 
 /**
  * Test WiFi status for connection.
@@ -163,46 +174,45 @@ String configFormHtml(void) {
  *
  */
 void defaultWebServerRegisterRoutes(void) {
-    webServer.on("/welcome", []() {
+    server.on("/welcome", HTTP_GET, [](AsyncWebServerRequest *request) {
         String welcomeHtml = "<h1>Welcome</h1>";
-        webServer.send(200, "text/html", welcomeHtml);
+        server.send_P(200, "text/html", welcomeHtml);
     });
-    webServer.on("/reset", []() {
+    server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request) {
         dataErase(0, 96);
         dataCommit();
-        webServer.send(200, "text/html", "<h1>Reset ok!</h1>");
+        server.send_P(200, "text/html", "<h1>Reset ok!</h1>");
         delay(500);
         ESP.reset();
     });
-    webServer.onNotFound([]() {
-        webServer.sendHeader("Location", "/welcome", true);
+    server.onNotFound([](AsyncWebServerRequest *request) {
+        request->header("Location", "/welcome", true);
         webServer.send(302, "text/plane", "");
-    });
-    appRoutes();
+    });    
 }
-
 
 /**
  *
  */
 void configWebServerRegisterRoutes(void) {
     Serial.println("Register config web server routes");
-    webServer.on("/", []() {
-        String configIndexHtml = "<!DOCTYPE html><html lang=en><meta charset=UTF-8><title>"+ appTitle +"</title><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=\"shortcut icon\" type=image/x-icon href=data:image/x-icon;,><style>*{background:#222;border:0;color:#fff;font:18px monospace}html{margin:0 auto;max-width:480px}input,input:focus,select,select:focus,button,button:focus,textarea,textarea:focus{outline:0;width:100%;background:#000;padding:8px;margin:0 0 16px 0;box-sizing:border-box;cursor:pointer}#mask{position:fixed;display:none;width:100%;height:100%;text-align:center;padding-top:100px;top:0;left:0;right:0;bottom:0;background-color:rgba(0,0,0,0.8);z-index:2;cursor:pointer}h1{font-size:30px;text-align:center}</style><body><h1>"+ appTitle +"</h1><div id=page></div><div id=mask></div><a href=http://javanile.org target=_blank>Javanile.org</a><script>let d=document;let g=i=>d.getElementById(i);let p=(p,f)=>fetch(p,{method:'POST',body:f?new FormData(g(f)):''}).then(async resp=>g('page').innerHTML=await resp.text());let e=(t,i,c)=>d.addEventListener(t,(e)=>{if(e.target.id==i){e.preventDefault();c(e.target);}},false);let o=a=>g('mask').style.display=a=='show'?'block':'none';let r=u=>{window.location.href=u};let t=(t,c)=>setTimeout(c,t);;p('config');e('click','connect',e=>{o('show');p('connect','config').then(()=>{o('hide');t(15000,()=>r('http://"+hostname+"/welcome'));});});e('change','network',e=>{if(e.value==-1){o('show');p('scan').then(()=>{o('hide')});}});e('click','test',e=>{o('show');setTimeout(()=>{o('hide')},3000)});</script></body></html>";
-        webServer.send(200, "text/html", configIndexHtml);
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        // @inject "../app/config/index.html"
+        String configIndexHtml PROGMEM = "<!DOCTYPE html><html lang=en><meta charset=UTF-8><title>" + appTitle + "</title><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=\"shortcut icon\" type=image/x-icon href=data:image/x-icon;,><style>" + styleCss + "</style><body><h1>" + appTitle + "</h1><div id=page></div><div id=mask></div><a href=http://javanile.org target=_blank>Javanile.org</a><script>" + appJs + ";" + configAppJs + ";</script></body></html>";,><style>" + styleCss + "</style><body><h1>" + appTitle + "</h1><div id=page></div><div id=mask></div><a href=http://javanile.org target=_blank>Javanile.org</a><script>    
+        server.send_P(200, "text/html", configIndexHtml);
     });
-    webServer.on("/config", []() {
-        webServer.send(200, "text/html", configFormHtml());
+    server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request.send(200, "text/html", configFormHtml());
     });
-    webServer.on("/scan", []() {
+    server.on("/scan", HTTP_GET, [](AsyncWebServerRequest *request) {
         configScanNetworks();
-        webServer.send(200, "text/html", configFormHtml());
+        request.send(200, "text/html", configFormHtml());
     });
-    webServer.on("/connect", []() {
+    server.on("/connect", HTTP_GET, [](AsyncWebServerRequest *request) {
         int statusCode;
         bool validData = false;
-        String ssid = webServer.arg("ssid");
-        String passphrase = webServer.arg("passphrase");
+        String ssid = request->arg("ssid");
+        String passphrase = request->arg("passphrase");
         String content;
         if (ssid.length() > 0 && passphrase.length() > 0) {
             dataErase(0, 96);
@@ -223,7 +233,7 @@ void configWebServerRegisterRoutes(void) {
             content = "{\"Error\":\"404 not found\"}";
             statusCode = 404;
         }
-        webServer.send(statusCode, "application/json", content);
+        request->send(statusCode, "application/json", content);
         if (validData) {
             delay(500);
             ESP.reset();
@@ -235,6 +245,7 @@ void configWebServerRegisterRoutes(void) {
  *
  */
 void discoverServerStart(void) {
+    /*
     discoverServer.on("/_discover", []() {
         String discoverInfo = "{\"name\":\"" + appTitle + "\"}";
         discoverServer.sendHeader("Access-Control-Allow-Origin", "*");
@@ -245,10 +256,8 @@ void discoverServerStart(void) {
         discoverServer.send(403, "text/html", "<h1>Forbidden</h1>");
     });
     discoverServer.begin();
+    */
 }
-
-
-
 
 /**
  * System bootstrap.
@@ -275,34 +284,37 @@ void setup(void) {
         WiFi.begin(ssid.c_str(), passphrase.c_str());
         if (testWifi()) {
         Serial.println("Successfully connected.");
-        discoverServerStart();
+        //discoverServerStart();
         defaultWebServerRegisterRoutes();
-        webServer.begin();
-        appSetup();
+        initWebSocket();
+        server.begin();
         return;
     }
 
     Serial.println("Turning on the config HotSpot.");
     discoverServerStart();
     configWebServerRegisterRoutes();
-    webServer.begin();
+    //webServer.begin();
+    initWebSocket();
+    server.begin();
     configHotSpotSetup();
-    while ((WiFi.status() != WL_CONNECTED)) {
+    /*while ((WiFi.status() != WL_CONNECTED)) {
         delay(100);
         webServer.handleClient();
         discoverServer.handleClient();
-    }
+    }*/
 }
 
 /**
  * System main loop.
  */
 void loop(void) {
-    if ((WiFi.status() == WL_CONNECTED)) {
-        appLoop();
+    if ((WiFi.status() == WL_CONNECTED)) {        
         delay(100);
-        webServer.handleClient();
-        discoverServer.handleClient();
+        //webServer.handleClient();
+        //discoverServer.handleClient();
+        
+        ws.cleanupClients();
     }
 }
 
